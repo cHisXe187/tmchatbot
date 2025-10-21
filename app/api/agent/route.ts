@@ -1,51 +1,60 @@
 import { NextRequest, NextResponse } from "next/server";
 export const runtime = "nodejs";
 
-type WorkflowResult = {
-  output?: { text?: string };
-  output_text?: string;
-  error?: { message?: string };
-  [k: string]: unknown;
-};
-
 export async function POST(req: NextRequest) {
   try {
+    // === 1) ENV prüfen ===
     const apiKey = process.env.OPENAI_API_KEY;
     const workflowId = process.env.OPENAI_WORKFLOW_ID;
-    if (!apiKey || !workflowId) {
+
+    if (!apiKey) {
       return NextResponse.json(
-        { error: "Missing OPENAI_API_KEY or OPENAI_WORKFLOW_ID" },
+        { error: "Missing OPENAI_API_KEY" },
         { status: 500 }
       );
     }
 
-    const { input = "", lang = "de" } = (await req.json()) as {
-      input?: string;
-      lang?: string;
-    };
+    // === 2) User-Eingabe lesen ===
+    const { input = "", lang = "de" } = await req.json();
 
+    // === 3) URL für Workflow definieren ===
     const url = `https://api.openai.com/v1/workflows/${workflowId}/runs`;
 
+    // === 4) Anfrage an OpenAI ===
     const res = await fetch(url, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
+        // 🚨 Ohne diesen Header kam dein Fehler:
+        "OpenAI-Beta": "workflows=v1",
       },
-      body: JSON.stringify({ input: { question: input, lang }, stream: false }),
+      body: JSON.stringify({
+        input: { question: input, lang },
+        stream: false,
+      }),
     });
 
-    const text = await res.text();
-    let data: WorkflowResult = {};
-    try {
-      data = text ? (JSON.parse(text) as WorkflowResult) : {};
-    } catch {
-      data = {};
+    // === 5) Antwort auswerten ===
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      return NextResponse.json(
+        { error: data?.error?.message || "OpenAI request failed" },
+        { status: res.status }
+      );
     }
 
-    return NextResponse.json({ ok: res.ok, url, data }, { status: res.status });
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : "server error";
-    return NextResponse.json({ error: msg }, { status: 500 });
+    // === 6) Text extrahieren ===
+    const reply =
+      data?.output?.text ||
+      data?.output_text ||
+      JSON.stringify(data);
+
+    return NextResponse.json({ reply, raw: data }, { status: 200 });
+  } catch (err) {
+    return NextResponse.json(
+      { error: (err as Error).message || "Server error" },
+      { status: 500 }
+    );
   }
 }
